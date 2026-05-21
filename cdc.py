@@ -21,12 +21,14 @@ CHANGELOG_SCHEMA = pa.schema([
     ("run_id", pa.string()),
 ])
 
+TRACKED_FIELDS = ["contracted_amount", "programme", "department", "subject", "funding_type"]
+
 SNAPSHOT_SCHEMA = pa.schema([
     ("fts_year", pa.int32()),
     ("orgnr", pa.string()),
     ("name", pa.string()),
     ("content_hash", pa.string()),
-])
+] + [(f, pa.string()) for f in TRACKED_FIELDS])
 
 POOL_SCHEMA = pa.schema([
     ("orgnr", pa.string()),
@@ -76,7 +78,14 @@ class FTSCDC:
         if t is None:
             return {}
         d = t.to_pydict()
-        return {(d["fts_year"][i], d["orgnr"][i], d["name"][i]): d["content_hash"][i] for i in range(t.num_rows)}
+        result = {}
+        for i in range(t.num_rows):
+            key = (d["fts_year"][i], d["orgnr"][i], d["name"][i])
+            result[key] = {"content_hash": d["content_hash"][i]}
+            for f in TRACKED_FIELDS:
+                if f in d:
+                    result[key][f] = d[f][i]
+        return result
 
     def _load_pool(self):
         t = self._read_parquet(self._gcs_path("cdc", "pool.parquet"))
@@ -99,16 +108,20 @@ class FTSCDC:
         for row in resolved_rows:
             key = (row["fts_year"], row["orgnr"], row["name"])
             h = row["content_hash"]
-            old_h = old_snaps.get(key)
-            new_snaps[key] = {"fts_year": row["fts_year"], "orgnr": row["orgnr"], "name": row["name"], "content_hash": h}
+            snap = {"fts_year": row["fts_year"], "orgnr": row["orgnr"], "name": row["name"], "content_hash": h}
+            for f in TRACKED_FIELDS:
+                snap[f] = str(row.get(f) or "")
+            new_snaps[key] = snap
 
-            if run_mode == "bootstrap" or old_h is None:
+            old_entry = old_snaps.get(key)
+            if run_mode == "bootstrap" or old_entry is None:
                 event_type = "new"
                 changed_fields = None
                 new_count += 1
-            elif old_h != h:
+            elif old_entry["content_hash"] != h:
                 event_type = "modified"
-                changed_fields = json.dumps(["content_hash"])
+                diffs = [f for f in TRACKED_FIELDS if str(row.get(f) or "") != str(old_entry.get(f) or "")]
+                changed_fields = json.dumps(diffs) if diffs else json.dumps(["content_hash"])
                 mod_count += 1
             else:
                 continue
