@@ -59,8 +59,20 @@ class FTSCDC:
         buf.seek(0)
         self._bucket.blob(path).upload_from_file(buf, content_type="application/octet-stream")
 
-    def _load_snapshots(self):
-        t = self._read_parquet(self._gcs_path("cdc", "snapshots.parquet"))
+    def _list_parsed_dates(self):
+        prefix = self._gcs_path("parsed") + "/"
+        dates = set()
+        for blob in self._bucket.list_blobs(prefix=prefix):
+            name = blob.name.split("/")[-1]
+            if name.endswith(".parquet"):
+                dates.add(name.replace(".parquet", ""))
+        return sorted(dates)
+
+    def _load_previous_parsed(self, run_date):
+        dates = [d for d in self._list_parsed_dates() if d < run_date]
+        if not dates:
+            return {}
+        t = self._read_parquet(self._gcs_path("parsed", f"{dates[-1]}.parquet"))
         if t is None:
             return {}
         d = t.to_pydict()
@@ -77,7 +89,7 @@ class FTSCDC:
     def run(self, resolved_rows, unresolved_rows, run_date, run_mode="daily"):
         run_id = str(uuid.uuid4())[:8]
         detected_time = datetime.now(timezone.utc).isoformat()
-        old_snaps = self._load_snapshots()
+        old_snaps = self._load_previous_parsed(run_date)
         pool = self._load_pool()
         changelog_rows = []
         new_count = 0
@@ -152,7 +164,7 @@ class FTSCDC:
         snap_rows = list(new_snaps.values())
         if snap_rows:
             self._write_parquet(pa.Table.from_pylist(snap_rows, schema=SNAPSHOT_SCHEMA),
-                               self._gcs_path("cdc", "snapshots.parquet"))
+                               self._gcs_path("parsed", f"{run_date}.parquet"))
         if pool:
             self._write_parquet(pa.Table.from_pylist([{"orgnr": k, **v} for k, v in pool.items()], schema=POOL_SCHEMA),
                                self._gcs_path("cdc", "pool.parquet"))
