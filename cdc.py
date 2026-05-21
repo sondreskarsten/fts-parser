@@ -159,7 +159,7 @@ class FTSCDC:
                 pool[orgnr] = {"first_seen": run_date, "last_seen": run_date, "n_commitments": 1, "programmes": prog}
 
         if run_mode != "bootstrap":
-            for key, old_h in old_snaps.items():
+            for key, old_entry in old_snaps.items():
                 if key not in new_snaps:
                     doc_hash = hashlib.sha256(f"{key[1]}|{key[2]}".encode()).hexdigest()[:12]
                     changelog_rows.append({
