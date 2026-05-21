@@ -1,6 +1,6 @@
 """CDC for FTS parser. LUAS: (fts_year, name, vat) — one commitment per beneficiary per year."""
 
-import io, json, uuid
+import io, json, uuid, hashlib
 from datetime import datetime, timezone
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -106,15 +106,16 @@ class FTSCDC:
             summary = " — ".join(filter(None, [row.get("programme", ""), row.get("name", ""), amt_str]))
 
             details = {k: v for k, v in row.items() if k not in ("content_hash", "orgnr_resolution_method")}
+            doc_hash = hashlib.sha256(f"{row['orgnr']}|{row['name']}".encode()).hexdigest()[:12]
             changelog_rows.append({
                 "orgnr": row["orgnr"],
-                "document_id": f"fts-{row['fts_year']}-{row['orgnr']}-{row['name'][:30]}",
+                "document_id": f"fts-{row['fts_year']}-{doc_hash}",
                 "data_source": "fts",
                 "event_type": event_type,
                 "event_subtype": f"fts_{row.get('funding_type', 'grant').lower().replace(' ', '_')}",
                 "summary": summary,
                 "changed_fields": changed_fields,
-                "valid_time": f"{row['fts_year']}-01-01",
+                "valid_time": row.get("start_date", f"{row['fts_year']}-01-01") if row.get("start_date") and row["start_date"] != "" else f"{row['fts_year']}-01-01",
                 "detected_time": detected_time,
                 "details_json": json.dumps(details, ensure_ascii=False, default=str),
                 "source_run_mode": run_mode,
@@ -132,14 +133,23 @@ class FTSCDC:
             else:
                 pool[orgnr] = {"first_seen": run_date, "last_seen": run_date, "n_commitments": 1, "programmes": prog}
 
+        if run_mode != "bootstrap":
+            for key, old_h in old_snaps.items():
+                if key not in new_snaps:
+                    doc_hash = hashlib.sha256(f"{key[1]}|{key[2]}".encode()).hexdigest()[:12]
+                    changelog_rows.append({
+                        "orgnr": key[1], "document_id": f"fts-{key[0]}-{doc_hash}",
+                        "data_source": "fts", "event_type": "disappeared",
+                        "event_subtype": "fts_commitment_ended", "summary": f"Disappeared: {key[2][:40]} FY{key[0]}",
+                        "changed_fields": None, "valid_time": run_date, "detected_time": detected_time,
+                        "details_json": None, "source_run_mode": run_mode, "run_id": run_id,
+                    })
+
         if changelog_rows:
             self._write_parquet(pa.Table.from_pylist(changelog_rows, schema=CHANGELOG_SCHEMA),
                                self._gcs_path("cdc", "changelog", f"{run_date}.parquet"))
 
         snap_rows = list(new_snaps.values())
-        for key, old_h in old_snaps.items():
-            if key not in new_snaps:
-                snap_rows.append({"fts_year": key[0], "orgnr": key[1], "name": key[2], "content_hash": old_h})
         if snap_rows:
             self._write_parquet(pa.Table.from_pylist(snap_rows, schema=SNAPSHOT_SCHEMA),
                                self._gcs_path("cdc", "snapshots.parquet"))
