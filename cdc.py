@@ -140,6 +140,7 @@ class FTSCDC:
                 "event_subtype": f"fts_{row.get('funding_type', 'grant').lower().replace(' ', '_')}",
                 "summary": summary,
                 "changed_fields": changed_fields,
+                # REVIEW: valid_time = project start_date or year-01-01 synthetic. State register diffed like enheter — should be snapshot date. See valid_time_audit.md
                 "valid_time": row.get("start_date", f"{row['fts_year']}-01-01") if row.get("start_date") and row["start_date"] != "" else f"{row['fts_year']}-01-01",
                 "detected_time": detected_time,
                 "details_json": json.dumps(details, ensure_ascii=False, default=str),
